@@ -1,16 +1,21 @@
 # Caminho real no repositório: .github/workflows/ci.yml
 #
-# Além do piso mínimo original (dependências instalam, os dois arquivos
-# Python compilam, o lint não acusa nada), este workflow agora roda a suíte
-# de testes em tests/: unitários (somar, executar_ferramenta,
-# carregar_contexto), de contrato (FERRAMENTAS bate com o código) e run-level
-# (responder() completo, com o cliente da OpenAI trocado por um dublê — sem
-# gastar chamada real).
+# Primeiro estágio da esteira. Dois jobs, em sequência:
 #
-# O que NÃO roda aqui: tests/test_smoke.py, marcado `smoke`, que chama a API
-# de verdade. Ele custa dinheiro e não é 100% determinístico — não pertence
-# ao gate de todo PR. Roda manualmente ou num job separado, com
-# `pytest -m smoke` e OPENAI_API_KEY configurada.
+#   build -> dependências instalam, os dois arquivos Python compilam, o lint
+#            não acusa nada e a suíte em tests/ passa SEM API real:
+#            unitários (somar, executar_ferramenta, carregar_contexto), de
+#            contrato (FERRAMENTAS bate com o código), run-level (responder()
+#            com o cliente da OpenAI trocado por um dublê) e a estrutura do
+#            dataset de eval.
+#   eval  -> tests/test_eval.py com a API REAL contra tests/eval_dataset.jsonl.
+#            Precisa do secret OPENAI_API_KEY; sem ele, avisa e pula.
+#
+# O Deploy Azure (deploy-azure.yml) só dispara quando esta run termina com
+# sucesso num push na main — teste quebrado não chega na Azure.
+#
+# O que NÃO roda aqui: tests/test_smoke.py, marcado `smoke`. Roda manualmente
+# com `pytest -m smoke` e OPENAI_API_KEY configurada.
 
 name: CI
 
@@ -43,4 +48,46 @@ jobs:
           ruff check agent.py app.py
 
       - name: Testes (unitários + contrato + run-level, sem API real)
-        run: pytest -m "not smoke" -v
+        run: pytest -m "not smoke and not eval" -v
+
+  eval:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      EVAL_TAXA_MINIMA: ${{ vars.EVAL_TAXA_MINIMA || '0.85' }}
+      EVAL_MODELO_JUIZ: ${{ vars.EVAL_MODELO_JUIZ }}
+    steps:
+      - name: Checar secret da OpenAI
+        id: secrets
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::warning::Secret OPENAI_API_KEY não configurado. Eval pulado — veja docs/PROMPTS_TESTES.md."
+            echo "pronto=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pronto=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.secrets.outputs.pronto == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.secrets.outputs.pronto == 'true'
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        if: steps.secrets.outputs.pronto == 'true'
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Eval do agente (API real)
+        if: steps.secrets.outputs.pronto == 'true'
+        run: pytest -m eval -v -s
+
+      - name: Publicar relatório do eval
+        if: always() && steps.secrets.outputs.pronto == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval_report.json
+          if-no-files-found: ignore
