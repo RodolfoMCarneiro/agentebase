@@ -62,10 +62,20 @@ repository secret**. Crie dois:
 | `AZURE_WEBAPP_NAME` | o nome que você deu ao Web App |
 | `AZURE_WEBAPP_PUBLISH_PROFILE` | conteúdo completo do arquivo baixado no passo 5 |
 
+Para o **eval** do agente rodar no pipeline, crie também:
+
+| Nome do secret | Valor |
+|---|---|
+| `OPENAI_API_KEY` | a mesma chave da OpenAI do passo 3 (o GitHub não enxerga os Application Settings da Azure) |
+
+Detalhes em [docs/PROMPTS_TESTES.md](docs/PROMPTS_TESTES.md).
+
 ## Passo 7 — Deploy
 
-Dê um `git push` na sua `main` (qualquer commit) ou vá na aba **Actions** do
-seu fork e rode o workflow **Deploy Azure** manualmente (`Run workflow`).
+Dê um `git push` na sua `main` (qualquer commit). O **CI** roda primeiro
+(build, testes e eval) e, se passar, dispara o **Deploy Azure**, que publica
+e confere se o app respondeu. Para publicar sem esperar o CI, vá na aba
+**Actions** e rode o workflow **Deploy Azure** manualmente (`Run workflow`).
 
 ## Passo 8 — Acessar
 

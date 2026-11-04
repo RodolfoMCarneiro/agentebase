@@ -5,23 +5,37 @@
 # AZURE_WEBAPP_PUBLISH_PROFILE) e passa a ter deploy automático a cada push
 # na própria main. Veja o passo a passo completo em DEPLOY_AZURE.md.
 #
+# Último estágio da esteira: não dispara direto no push, e sim quando o CI
+# (ci.yml: build + testes + eval) termina COM SUCESSO num push na main. Teste
+# quebrado não chega na Azure. Depois do deploy, o smoke confere que o Web App
+# responde /_stcore/health.
+#
 # Sem os secrets configurados (ex.: no repositório-template original), o job
 # roda, avisa que faltam secrets e PULA o deploy — não falha a run.
 
 name: Deploy Azure
 
 on:
-  push:
+  workflow_run:
+    workflows: [ CI ]
+    types: [ completed ]
     branches: [ main ]
   workflow_dispatch:
 
 jobs:
   deploy:
     # Com DEPLOY_ESTRATEGIA=canary quem publica é o deploy-canary.yml.
-    if: vars.DEPLOY_ESTRATEGIA != 'canary'
+    # workflow_run também dispara quando o CI falha — por isso o conclusion.
+    if: >-
+      vars.DEPLOY_ESTRATEGIA != 'canary' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
     steps:
+      # Publica exatamente o commit que o CI testou, não o que estiver na main agora.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Checar secrets do Azure
         id: secrets
@@ -34,9 +48,14 @@ jobs:
           fi
 
       - name: Deploy no Azure Web App
+        id: deploy
         if: steps.secrets.outputs.pronto == 'true'
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: .
+
+      - name: Smoke pós-deploy
+        if: steps.secrets.outputs.pronto == 'true'
+        run: bash .github/scripts/canary.sh saude "${{ steps.deploy.outputs.webapp-url }}"
